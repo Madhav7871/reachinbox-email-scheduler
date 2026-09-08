@@ -18,3 +18,11 @@ model EmailJob {
   slackToken  String?
   createdAt   DateTime @default(now())
 }
+
+model UserSettings {
+  id           String   @id @default(uuid())
+  senderId     String   @unique
+  slackWebhook String?  // Slack se notification bhejne ke liye
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}

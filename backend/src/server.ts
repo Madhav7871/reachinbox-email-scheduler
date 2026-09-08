@@ -6,6 +6,11 @@ import { PrismaClient } from "@prisma/client";
 import dotenv from "dotenv";
 import path from "path";
 
+// Bull-board imports for Live Queue Visibility
+import { createBullBoard } from "@bull-board/api";
+import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
+import { ExpressAdapter } from "@bull-board/express";
+
 // Load environment variables
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
@@ -23,7 +28,20 @@ const redisConnection = new IORedis(process.env.REDIS_URL as string, {
 const emailQueue = new Queue("email-queue", { connection: redisConnection });
 
 // ==========================================
-// API: Schedule New Email
+// Live BullMQ Admin Dashboard Setup
+// ==========================================
+const serverAdapter = new ExpressAdapter();
+serverAdapter.setBasePath("/admin/queues");
+
+createBullBoard({
+  queues: [new BullMQAdapter(emailQueue)],
+  serverAdapter: serverAdapter,
+});
+
+app.use("/admin/queues", serverAdapter.getRouter());
+
+// ==========================================
+// API: Schedule New Email (With Detailed Response)
 // ==========================================
 app.post("/api/schedule", async (req, res) => {
   const { emails, subject, body, scheduledAt, senderId } = req.body;
@@ -38,19 +56,17 @@ app.post("/api/schedule", async (req, res) => {
 
     let count = 0;
     for (const email of emails) {
-      // Create DB record and attach senderId
       const jobRecord = await prisma.emailJob.create({
         data: {
           recipient: email,
           subject,
           body,
-          senderId: senderId || "unknown", // Saving the tenant's identity
+          senderId: senderId || "unknown",
           status: "SCHEDULED",
           scheduledAt: new Date(scheduledAt),
         },
       });
 
-      // Push to BullMQ
       await emailQueue.add(
         "send-email",
         {
@@ -65,7 +81,13 @@ app.post("/api/schedule", async (req, res) => {
       count++;
     }
 
-    res.json({ message: "Scheduled successfully", count });
+    const maxLimit = parseInt(process.env.MAX_EMAILS_PER_HOUR || "200", 10);
+
+    res.json({
+      success: true,
+      message: `Successfully scheduled ${count} email(s)! If hourly limit (${maxLimit}/hr) is reached, excess emails will automatically be rescheduled to the next hour window.`,
+      count,
+    });
   } catch (error) {
     console.error("Schedule Error:", error);
     res.status(500).json({ error: "Failed to schedule emails" });
@@ -82,7 +104,6 @@ app.get("/api/jobs/scheduled", async (req, res) => {
     const jobs = await prisma.emailJob.findMany({
       where: {
         status: "SCHEDULED",
-        // 🔴 IMPORTANT: Filter only records belonging to this senderId
         ...(senderId ? { senderId: String(senderId) } : {}),
       },
       orderBy: { scheduledAt: "asc" },
@@ -104,7 +125,6 @@ app.get("/api/jobs/sent", async (req, res) => {
     const jobs = await prisma.emailJob.findMany({
       where: {
         status: { in: ["SENT", "FAILED"] },
-        // 🔴 IMPORTANT: Filter only records belonging to this senderId
         ...(senderId ? { senderId: String(senderId) } : {}),
       },
       orderBy: { scheduledAt: "desc" },
@@ -121,5 +141,8 @@ app.get("/api/jobs/sent", async (req, res) => {
 // ==========================================
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Backend API running securely on port ${PORT}`);
+  console.log(`✅ Backend API running securely on port ${PORT}`);
+  console.log(
+    `📊 BullMQ Live Dashboard: http://localhost:${PORT}/admin/queues`,
+  );
 });
