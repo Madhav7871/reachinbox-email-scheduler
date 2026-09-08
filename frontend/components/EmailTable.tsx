@@ -6,7 +6,8 @@ interface EmailTableProps {
   activeTab: "scheduled" | "sent";
   scheduledJobs: EmailJob[];
   sentJobs: EmailJob[];
-  fetchingData: boolean;
+  initialLoading: boolean;
+  isRefreshing: boolean;
   onRefresh: () => void;
 }
 
@@ -14,7 +15,8 @@ export default function EmailTable({
   activeTab,
   scheduledJobs,
   sentJobs,
-  fetchingData,
+  initialLoading,
+  isRefreshing,
   onRefresh,
 }: EmailTableProps) {
   const jobs = activeTab === "scheduled" ? scheduledJobs : sentJobs;
@@ -25,12 +27,15 @@ export default function EmailTable({
         <h2 className="text-lg font-bold text-slate-800 capitalize">
           {activeTab === "scheduled" ? "Scheduled Emails" : "Sent Emails"}
         </h2>
+
+        {/* Subtle Refresh button with spinning indicator */}
         <button
           onClick={onRefresh}
-          className="text-xs font-semibold text-[#00A859] hover:underline flex items-center gap-1.5"
+          disabled={isRefreshing}
+          className="text-xs font-semibold text-[#00A859] hover:underline flex items-center gap-1.5 transition"
         >
           <svg
-            className="w-3.5 h-3.5"
+            className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`}
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
@@ -42,11 +47,11 @@ export default function EmailTable({
               d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
             />
           </svg>
-          Refresh List
+          <span>{isRefreshing ? "Updating..." : "Refresh List"}</span>
         </button>
       </div>
 
-      {fetchingData ? (
+      {initialLoading && jobs.length === 0 ? (
         <div className="py-24 text-center text-slate-400 text-sm">
           Loading emails...
         </div>
@@ -130,7 +135,6 @@ export default function EmailTable({
                 </div>
               </div>
 
-              {/* Action Star */}
               <button className="text-slate-300 hover:text-amber-400 transition pl-4">
                 <svg
                   className="w-4 h-4"

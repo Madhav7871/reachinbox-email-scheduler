@@ -16,28 +16,41 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [scheduledJobs, setScheduledJobs] = useState<EmailJob[]>([]);
   const [sentJobs, setSentJobs] = useState<EmailJob[]>([]);
-  const [fetchingData, setFetchingData] = useState(false);
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const fetchJobs = async () => {
-    setFetchingData(true);
+  // Background fetch silently updates data without triggering full-screen loading
+  const fetchJobs = async (isSilent = false) => {
+    if (!isSilent) setIsRefreshing(true);
+
     try {
-      const resSched = await fetch("http://localhost:3001/api/jobs/scheduled");
-      const dataSched = await resSched.json();
-      if (Array.isArray(dataSched)) setScheduledJobs(dataSched);
+      const [resSched, resSent] = await Promise.all([
+        fetch("http://localhost:3001/api/jobs/scheduled"),
+        fetch("http://localhost:3001/api/jobs/sent"),
+      ]);
 
-      const resSent = await fetch("http://localhost:3001/api/jobs/sent");
+      const dataSched = await resSched.json();
       const dataSent = await resSent.json();
+
+      if (Array.isArray(dataSched)) setScheduledJobs(dataSched);
       if (Array.isArray(dataSent)) setSentJobs(dataSent);
     } catch (err) {
       console.error("Failed to fetch jobs", err);
     } finally {
-      setFetchingData(false);
+      setIsInitialLoading(false);
+      setIsRefreshing(false);
     }
   };
 
   useEffect(() => {
-    fetchJobs();
-    const interval = setInterval(fetchJobs, 5000);
+    // Initial fetch on mount
+    fetchJobs(false);
+
+    // Silent background polling every 5 seconds (zero screen flickering)
+    const interval = setInterval(() => {
+      fetchJobs(true);
+    }, 5000);
+
     return () => clearInterval(interval);
   }, []);
 
@@ -58,8 +71,9 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           activeTab={activeTab}
           scheduledJobs={scheduledJobs}
           sentJobs={sentJobs}
-          fetchingData={fetchingData}
-          onRefresh={fetchJobs}
+          initialLoading={isInitialLoading}
+          isRefreshing={isRefreshing}
+          onRefresh={() => fetchJobs(false)}
         />
       </div>
 
@@ -69,7 +83,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           onClose={() => setIsComposeOpen(false)}
           onSuccess={() => {
             setIsComposeOpen(false);
-            fetchJobs();
+            fetchJobs(false);
           }}
         />
       )}
