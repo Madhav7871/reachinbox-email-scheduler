@@ -11,14 +11,14 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
   const [password, setPassword] = useState("");
 
   const triggerLogin = (
-    userEmail = "oliver.brown@domain.io",
-    userName = "Oliver Brown",
+    userEmail = "madhavkalra456@gmail.com",
+    userName = "Madhav Kalra",
   ) => {
     onLogin({
       name: userName,
       email: userEmail,
       avatar:
-        "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=120&h=120&fit=crop&crop=faces",
+        "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&h=120&fit=crop&crop=faces",
     });
   };
 
@@ -29,11 +29,10 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
           Login
         </h1>
 
-        {/* Google Login Button with Figma styling */}
         <button
           type="button"
           onClick={() => triggerLogin()}
-          className="w-full flex items-center justify-center gap-3 bg-[#EBF7EE] hover:bg-[#E0F2E4] border border-[#CDE9D3] text-slate-800 font-semibold py-3 px-4 rounded-xl transition duration-150"
+          className="w-full flex items-center justify-center gap-3 bg-[#EBF7EE] hover:bg-[#E0F2E4] border border-[#CDE9D3] text-slate-800 font-semibold py-3 px-4 rounded-xl transition duration-150 cursor-pointer"
         >
           <svg className="w-5 h-5" viewBox="0 0 24 24">
             <path
@@ -69,7 +68,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            triggerLogin(email || undefined);
+            triggerLogin(email || "madhavkalra456@gmail.com", "Madhav Kalra");
           }}
           className="space-y-4"
         >
@@ -96,7 +95,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
 
           <button
             type="submit"
-            className="w-full mt-2 bg-[#00A859] hover:bg-[#00924D] active:bg-[#007F43] text-white font-semibold py-3 rounded-xl transition duration-150 shadow-sm text-sm"
+            className="w-full mt-2 bg-[#00A859] hover:bg-[#00924D] active:bg-[#007F43] text-white font-semibold py-3 rounded-xl transition duration-150 shadow-sm text-sm cursor-pointer"
           >
             Login
           </button>

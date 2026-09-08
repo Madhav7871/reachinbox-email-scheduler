@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { User, EmailJob } from "../types";
 import Header from "./Header";
 import Sidebar from "./Sidebar";
@@ -18,8 +18,8 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [sentJobs, setSentJobs] = useState<EmailJob[]>([]);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  // Background fetch silently updates data without triggering full-screen loading
   const fetchJobs = async (isSilent = false) => {
     if (!isSilent) setIsRefreshing(true);
 
@@ -43,10 +43,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   };
 
   useEffect(() => {
-    // Initial fetch on mount
     fetchJobs(false);
-
-    // Silent background polling every 5 seconds (zero screen flickering)
     const interval = setInterval(() => {
       fetchJobs(true);
     }, 5000);
@@ -54,23 +51,49 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     return () => clearInterval(interval);
   }, []);
 
+  // Filter jobs dynamically across recipient, subject, and body
+  const filterList = (list: EmailJob[]) => {
+    if (!searchQuery.trim()) return list;
+    const query = searchQuery.toLowerCase();
+    return list.filter(
+      (job) =>
+        job.recipient?.toLowerCase().includes(query) ||
+        job.subject?.toLowerCase().includes(query) ||
+        job.body?.toLowerCase().includes(query),
+    );
+  };
+
+  const filteredScheduledJobs = useMemo(
+    () => filterList(scheduledJobs),
+    [scheduledJobs, searchQuery],
+  );
+  const filteredSentJobs = useMemo(
+    () => filterList(sentJobs),
+    [sentJobs, searchQuery],
+  );
+
   return (
     <div className="min-h-screen bg-white text-slate-800 flex flex-col font-sans">
-      <Header user={user} onLogout={onLogout} />
+      <Header
+        user={user}
+        onLogout={onLogout}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+      />
 
       <div className="flex flex-1">
         <Sidebar
           activeTab={activeTab}
           setActiveTab={setActiveTab}
-          scheduledCount={scheduledJobs.length}
-          sentCount={sentJobs.length}
+          scheduledCount={filteredScheduledJobs.length}
+          sentCount={filteredSentJobs.length}
           onOpenCompose={() => setIsComposeOpen(true)}
         />
 
         <EmailTable
           activeTab={activeTab}
-          scheduledJobs={scheduledJobs}
-          sentJobs={sentJobs}
+          scheduledJobs={filteredScheduledJobs}
+          sentJobs={filteredSentJobs}
           initialLoading={isInitialLoading}
           isRefreshing={isRefreshing}
           onRefresh={() => fetchJobs(false)}
