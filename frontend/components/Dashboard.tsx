@@ -5,6 +5,7 @@ import Header from "./Header";
 import Sidebar from "./Sidebar";
 import EmailTable from "./EmailTable";
 import ComposeModal from "./ComposeModal";
+import Toast from "./Toast";
 
 interface DashboardProps {
   user: User;
@@ -20,7 +21,12 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  // 🔴 IMPORTANT: Passed senderId to the backend to filter only current user's emails
+  // Global Toast State
+  const [toast, setToast] = useState<{
+    message: string;
+    type: "success" | "error" | "warning";
+  } | null>(null);
+
   const fetchJobs = async (isSilent = false) => {
     if (!isSilent) setIsRefreshing(true);
 
@@ -53,9 +59,8 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [user.email]); // Trigger refetch if user changes
+  }, [user.email]);
 
-  // Filter jobs dynamically across recipient, subject, and body
   const filterList = (list: EmailJob[]) => {
     if (!searchQuery.trim()) return list;
     const query = searchQuery.toLowerCase();
@@ -77,7 +82,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   );
 
   return (
-    <div className="min-h-screen bg-white text-slate-800 flex flex-col font-sans">
+    <div className="min-h-screen bg-white text-slate-800 flex flex-col font-sans relative">
       <Header
         user={user}
         onLogout={onLogout}
@@ -100,7 +105,13 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           sentJobs={filteredSentJobs}
           initialLoading={isInitialLoading}
           isRefreshing={isRefreshing}
-          onRefresh={() => fetchJobs(false)}
+          onRefresh={() => {
+            fetchJobs(false);
+            setToast({
+              message: "Jobs list refreshed successfully.",
+              type: "success",
+            });
+          }}
         />
       </div>
 
@@ -108,10 +119,23 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
         <ComposeModal
           userEmail={user.email}
           onClose={() => setIsComposeOpen(false)}
-          onSuccess={() => {
+          onSuccess={(msg) => {
             setIsComposeOpen(false);
             fetchJobs(false);
+            setToast({
+              message: msg || "Campaign successfully queued!",
+              type: "success",
+            });
           }}
+        />
+      )}
+
+      {/* Global Bottom-Right Toast Popup */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
         />
       )}
     </div>

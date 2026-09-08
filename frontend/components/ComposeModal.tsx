@@ -4,7 +4,7 @@ import React, { useState } from "react";
 interface ComposeModalProps {
   userEmail: string;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: (message?: string) => void;
 }
 
 export default function ComposeModal({
@@ -19,13 +19,12 @@ export default function ComposeModal({
   const [scheduledAt, setScheduledAt] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Email validation regex
+  // Strict email validation regex
   const isValidEmail = (email: string) =>
     /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
-  // Handle typing recipients with chips (Comma/Space trigger)
+  // Handle typing recipients with chips (Comma/Space/Enter trigger)
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (["Enter", ",", " "].includes(e.key)) {
       e.preventDefault();
@@ -77,7 +76,6 @@ export default function ComposeModal({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Include whatever is typed in current input if valid
     let finalEmails = [...emails];
     const leftover = currentInput.trim();
     if (leftover) {
@@ -114,14 +112,11 @@ export default function ComposeModal({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to schedule emails");
 
-      setToastMessage(
+      // Trigger global bottom-right toast message via parent callback
+      onSuccess(
         data.message ||
           `Successfully scheduled ${finalEmails.length} campaign(s)!`,
       );
-
-      setTimeout(() => {
-        onSuccess();
-      }, 2500);
     } catch (error: any) {
       console.error(error);
       setErrorMsg(error.message || "Error scheduling emails");
@@ -132,19 +127,6 @@ export default function ComposeModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/50 backdrop-blur-sm">
       <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden border border-slate-100 relative">
-        {/* Toast Notification */}
-        {toastMessage && (
-          <div className="absolute inset-x-0 top-0 z-50 bg-emerald-600 text-white px-6 py-4 flex items-center gap-3 shadow-xl">
-            <span className="text-xl">🚀</span>
-            <div className="flex-1">
-              <p className="text-xs font-bold uppercase tracking-wider">
-                Campaign Queued
-              </p>
-              <p className="text-xs text-emerald-50 mt-0.5">{toastMessage}</p>
-            </div>
-          </div>
-        )}
-
         {/* Header */}
         <div className="px-8 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/80">
           <h3 className="font-extrabold text-lg text-slate-800 tracking-tight flex items-center gap-2">
@@ -217,7 +199,7 @@ export default function ComposeModal({
                 type="email"
                 placeholder={
                   emails.length === 0
-                    ? "Type email & press space/comma..."
+                    ? "Type valid email & press space/comma..."
                     : "Add more..."
                 }
                 value={currentInput}
@@ -227,8 +209,8 @@ export default function ComposeModal({
               />
             </div>
             <span className="text-[10px] text-slate-400 mt-1 block">
-              Press space, comma, or enter to add multiple valid email
-              recipients.
+              Only valid email formats are accepted. Press space, comma, or
+              enter to add.
             </span>
           </div>
 
@@ -284,7 +266,7 @@ export default function ComposeModal({
             </button>
             <button
               type="submit"
-              disabled={loading || !!toastMessage}
+              disabled={loading}
               className="px-8 py-3 bg-[#00A859] hover:bg-[#00924D] text-white text-sm font-extrabold rounded-xl shadow-lg hover:shadow-xl transition disabled:opacity-50 cursor-pointer"
             >
               {loading ? "Processing..." : "Schedule Campaign"}
