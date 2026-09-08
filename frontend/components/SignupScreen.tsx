@@ -1,25 +1,31 @@
 "use client";
 import React, { useState } from "react";
-import { signInWithPopup, signInWithEmailAndPassword } from "firebase/auth";
+import {
+  signInWithPopup,
+  createUserWithEmailAndPassword,
+  updateProfile,
+} from "firebase/auth";
 import { auth, googleProvider } from "../lib/firebase";
 import { User } from "../types";
 
-interface LoginScreenProps {
+interface SignupScreenProps {
   onLogin: (user: User) => void;
-  onSwitchToSignup: () => void;
+  onSwitchToLogin: () => void;
 }
 
-export default function LoginScreen({
+export default function SignupScreen({
   onLogin,
-  onSwitchToSignup,
-}: LoginScreenProps) {
+  onSwitchToLogin,
+}: SignupScreenProps) {
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // 1. Google OAuth Popup Login
-  const handleGoogleLogin = async () => {
+  // Google Sign-Up / Sign-In
+  const handleGoogleSignup = async () => {
     try {
       setLoading(true);
       setError("");
@@ -34,50 +40,56 @@ export default function LoginScreen({
           "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&h=120&fit=crop&crop=faces",
       });
     } catch (err: any) {
-      console.error("Google Sign-In Error:", err);
-      setError(err?.message || "Google Sign-In was cancelled or failed.");
+      console.error("Google Sign-Up Error:", err);
+      setError(err?.message || "Google sign up cancelled or failed.");
     } finally {
       setLoading(false);
     }
   };
 
-  // 2. Email & Password Login
-  const handleEmailLogin = async (e: React.FormEvent) => {
+  // Email & Password Account Registration
+  const handleEmailSignup = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) {
-      setError("Please fill in both email and password.");
+    if (!name || !email || !password) {
+      setError("Please fill out all fields.");
+      return;
+    }
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters long.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
       return;
     }
 
     try {
       setLoading(true);
       setError("");
-      const userCredential = await signInWithEmailAndPassword(
+      const userCredential = await createUserWithEmailAndPassword(
         auth,
         email,
         password,
       );
       const user = userCredential.user;
 
+      // Attach user display name
+      await updateProfile(user, { displayName: name });
+
       onLogin({
-        name: user.displayName || email.split("@")[0],
+        name: name,
         email: user.email || email,
         avatar:
-          user.photoURL ||
           "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&h=120&fit=crop&crop=faces",
       });
     } catch (err: any) {
-      console.error("Email Login Error:", err);
-      if (
-        err.code === "auth/invalid-credential" ||
-        err.code === "auth/wrong-password" ||
-        err.code === "auth/user-not-found"
-      ) {
-        setError("Invalid email or password. Please check your credentials.");
-      } else if (err.code === "auth/too-many-requests") {
-        setError("Too many failed attempts. Please try again later.");
+      console.error("Signup Error:", err);
+      if (err.code === "auth/email-already-in-use") {
+        setError("This email is already registered. Please log in.");
+      } else if (err.code === "auth/weak-password") {
+        setError("Password should be at least 6 characters.");
       } else {
-        setError(err.message || "Login failed. Please try again.");
+        setError(err.message || "Failed to create account.");
       }
     } finally {
       setLoading(false);
@@ -88,7 +100,7 @@ export default function LoginScreen({
     <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-4">
       <div className="bg-white rounded-3xl shadow-sm border border-slate-200/70 w-full max-w-[420px] p-10">
         <h1 className="text-3xl font-extrabold text-center text-slate-900 mb-8 tracking-tight">
-          Login
+          Create Account
         </h1>
 
         {error && (
@@ -97,10 +109,10 @@ export default function LoginScreen({
           </div>
         )}
 
-        {/* Google Login Button */}
+        {/* Google Quick Sign-Up */}
         <button
           type="button"
-          onClick={handleGoogleLogin}
+          onClick={handleGoogleSignup}
           disabled={loading}
           className="w-full flex items-center justify-center gap-3 bg-[#EBF7EE] hover:bg-[#E0F2E4] border border-[#CDE9D3] text-slate-800 font-semibold py-3 px-4 rounded-xl transition duration-150 cursor-pointer disabled:opacity-50"
         >
@@ -123,20 +135,30 @@ export default function LoginScreen({
             />
           </svg>
           <span className="text-sm font-medium text-slate-700">
-            {loading ? "Authenticating..." : "Login with Google"}
+            {loading ? "Connecting..." : "Sign up with Google"}
           </span>
         </button>
 
         <div className="relative flex py-6 items-center">
           <div className="flex-grow border-t border-slate-200"></div>
           <span className="flex-shrink mx-3 text-slate-400 text-[11px] font-semibold tracking-wider uppercase">
-            or sign in through email
+            or sign up with email
           </span>
           <div className="flex-grow border-t border-slate-200"></div>
         </div>
 
-        {/* Email/Password Form */}
-        <form onSubmit={handleEmailLogin} className="space-y-4">
+        {/* Signup Form */}
+        <form onSubmit={handleEmailSignup} className="space-y-3.5">
+          <div>
+            <input
+              type="text"
+              placeholder="Full Name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl bg-[#F1F4F6] border-none text-slate-900 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              required
+            />
+          </div>
           <div>
             <input
               type="email"
@@ -150,9 +172,19 @@ export default function LoginScreen({
           <div>
             <input
               type="password"
-              placeholder="Password"
+              placeholder="Password (min 6 characters)"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl bg-[#F1F4F6] border-none text-slate-900 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              required
+            />
+          </div>
+          <div>
+            <input
+              type="password"
+              placeholder="Confirm Password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
               className="w-full px-4 py-3 rounded-xl bg-[#F1F4F6] border-none text-slate-900 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
               required
             />
@@ -163,19 +195,19 @@ export default function LoginScreen({
             disabled={loading}
             className="w-full mt-2 bg-[#00A859] hover:bg-[#00924D] active:bg-[#007F43] text-white font-semibold py-3 rounded-xl transition duration-150 shadow-sm text-sm cursor-pointer disabled:opacity-50"
           >
-            {loading ? "Signing In..." : "Login"}
+            {loading ? "Creating Account..." : "Create Account"}
           </button>
         </form>
 
-        {/* Switch to Sign Up */}
+        {/* Switch back to Login */}
         <div className="mt-6 text-center text-xs text-slate-500">
-          Don&apos;t have an account?{" "}
+          Already have an account?{" "}
           <button
             type="button"
-            onClick={onSwitchToSignup}
+            onClick={onSwitchToLogin}
             className="text-[#00A859] font-bold hover:underline cursor-pointer ml-1"
           >
-            Create an Account
+            Log in
           </button>
         </div>
       </div>
