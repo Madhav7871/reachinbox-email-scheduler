@@ -6,10 +6,17 @@ import { PrismaClient } from "@prisma/client";
 import dotenv from "dotenv";
 import path from "path";
 
-// Bull-board imports for Live Queue Visibility
+// Bull-board imports for live queue visibility
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { ExpressAdapter } from "@bull-board/express";
+
+// Elasticsearch / OpenSearch helpers
+import {
+  initElasticsearch,
+  indexEmail,
+  searchEmailsInES,
+} from "./elasticsearch";
 
 // Load environment variables
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
@@ -70,7 +77,7 @@ app.post("/api/settings/slack", async (req, res) => {
 });
 
 // ==========================================
-// API: Schedule New Email (With Detailed Response)
+// API: Schedule New Emails (With Elasticsearch Sync)
 // ==========================================
 app.post("/api/schedule", async (req, res) => {
   const { emails, subject, body, scheduledAt, senderId } = req.body;
@@ -85,6 +92,7 @@ app.post("/api/schedule", async (req, res) => {
 
     let count = 0;
     for (const email of emails) {
+      // 1. Persist in Relational Database
       const jobRecord = await prisma.emailJob.create({
         data: {
           recipient: email,
@@ -96,6 +104,10 @@ app.post("/api/schedule", async (req, res) => {
         },
       });
 
+      // 2. Index immediately into Elasticsearch / OpenSearch
+      await indexEmail(jobRecord);
+
+      // 3. Push to BullMQ persistent queue
       await emailQueue.add(
         "send-email",
         {
@@ -166,7 +178,47 @@ app.get("/api/jobs/sent", async (req, res) => {
 });
 
 // ==========================================
-// Initialize Server
+// API: Search Emails via Elasticsearch (With Fallback)
+// ==========================================
+app.get("/api/emails/search", async (req, res) => {
+  const { q, senderId } = req.query;
+
+  if (!q) return res.json([]);
+
+  // 1. Query Elasticsearch full-text fuzzy index
+  const esResults = await searchEmailsInES(
+    String(q),
+    senderId ? String(senderId) : undefined,
+  );
+  if (esResults) {
+    return res.json(esResults);
+  }
+
+  // 2. Resilient Database Fallback
+  try {
+    const dbResults = await prisma.emailJob.findMany({
+      where: {
+        ...(senderId ? { senderId: String(senderId) } : {}),
+        OR: [
+          { recipient: { contains: String(q), mode: "insensitive" } },
+          { subject: { contains: String(q), mode: "insensitive" } },
+          { body: { contains: String(q), mode: "insensitive" } },
+        ],
+      },
+      orderBy: { scheduledAt: "desc" },
+    });
+    return res.json(dbResults);
+  } catch (error) {
+    console.error("Search Fallback Error:", error);
+    return res.status(500).json({ error: "Failed to search emails" });
+  }
+});
+
+// Initialize Elasticsearch index on startup
+initElasticsearch();
+
+// ==========================================
+// Start Server
 // ==========================================
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
