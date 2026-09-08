@@ -1,109 +1,115 @@
-import { Worker, Queue } from "bullmq";
-import IORedis from "ioredis";
-import { PrismaClient } from "@prisma/client";
-import nodemailer from "nodemailer";
+import path from "path";
 import dotenv from "dotenv";
 
-dotenv.config();
+// Load .env from backend directory
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+
+import { Worker, Job } from "bullmq";
+import IORedis from "ioredis";
+import nodemailer from "nodemailer";
+import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
+
 const connection = new IORedis(process.env.REDIS_URL as string, {
   maxRetriesPerRequest: null,
 });
-const emailQueue = new Queue("email-queue", { connection });
 
-// Nodemailer with Ethereal SMTP
+// Check both SMTP and ETHEREAL variable names, remove any quotes or spaces
+const rawUser = process.env.SMTP_USER || process.env.ETHEREAL_USER || "";
+const rawPass = process.env.SMTP_PASS || process.env.ETHEREAL_PASS || "";
+
+const smtpUser = rawUser.replace(/["']/g, "").trim();
+const smtpPass = rawPass.replace(/["'\s]/g, "").trim();
+
+console.log("-----------------------------------------");
+console.log(
+  "Loaded Email User:",
+  smtpUser ? `✅ ${smtpUser}` : "❌ NOT FOUND IN .ENV",
+);
+console.log(
+  "Loaded App Password:",
+  smtpPass ? "✅ Password loaded safely" : "❌ NOT FOUND IN .ENV",
+);
+console.log("-----------------------------------------");
+
+// Gmail SMTP transporter with direct SSL
 const transporter = nodemailer.createTransport({
-  host: "smtp.ethereal.email",
-  port: 587,
+  service: "gmail",
   auth: {
-    user: process.env.ETHEREAL_USER,
-    pass: process.env.ETHEREAL_PASS,
+    user: smtpUser,
+    pass: smtpPass,
   },
 });
 
-const MAX_EMAILS_PER_HOUR = parseInt(
-  process.env.MAX_EMAILS_PER_HOUR || "200",
-  10,
-);
-
-const worker = new Worker(
+const emailWorker = new Worker(
   "email-queue",
-  async (job) => {
-    const { jobId, recipient, subject, body, senderId } = job.data;
+  async (job: Job) => {
+    const { jobId, recipient, subject, body } = job.data;
+    console.log(`\n[Processing Job] Delivering to: ${recipient}`);
 
-    // 1. Rate Limiting via Redis (Per Sender per Hour)
-    const currentHour = new Date().toISOString().slice(0, 13);
-    const redisKey = `rate_limit:${senderId}:${currentHour}`;
-    const currentCount = await connection.incr(redisKey);
-
-    if (currentCount === 1) {
-      await connection.expire(redisKey, 3600);
-    }
-
-    // 2. If Hourly Limit Exceeded -> Reschedule to Next Hour
-    if (currentCount > MAX_EMAILS_PER_HOUR) {
-      console.log(
-        `Rate limit reached for sender ${senderId}. Rescheduling job ${jobId}.`,
-      );
-      const now = new Date();
-      const nextHour = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-        now.getHours() + 1,
-        0,
-        0,
-        0,
-      );
-      const delayMs = nextHour.getTime() - now.getTime();
-
-      await emailQueue.add("send-email", job.data, {
-        delay: delayMs,
-        jobId: `rescheduled_${jobId}`,
+    if (!smtpUser || !smtpPass) {
+      const errorMsg = "Missing email credentials in backend/.env";
+      console.error(`❌ [Error]: ${errorMsg}`);
+      await prisma.emailJob.update({
+        where: { id: jobId },
+        data: { status: "FAILED" },
       });
-      return;
+      throw new Error(errorMsg);
     }
 
-    // 3. Send Email via Ethereal & Update DB
     try {
-      const info = await transporter.sendMail({
-        from: `"ReachInbox Sender" <sender@reachinbox.ai>`,
+      const mailOptions = {
+        from: `"Reachinbox Mailer" <${smtpUser}>`,
         to: recipient,
-        subject: subject,
-        text: body,
-      });
+        subject: subject || "Notification from Reachinbox",
+        text: body || "Hello, this is a test email sent from Reachinbox.",
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 24px; color: #1e293b; background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
+            <h2 style="color: #00A859; margin-top: 0;">${subject || "Reachinbox Notification"}</h2>
+            <p style="font-size: 15px; line-height: 1.6; color: #334155;">${(body || "Hello!").replace(/\n/g, "<br/>")}</p>
+            <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+            <small style="color: #94a3b8;">Delivered via Reachinbox Queue Engine</small>
+          </div>
+        `,
+      };
+
+      const info = await transporter.sendMail(mailOptions);
       console.log(
-        `Email sent to ${recipient}. Preview URL: ${nodemailer.getTestMessageUrl(info)}`,
+        `✅ [Delivered] Successfully sent to real inbox! Message ID: ${info.messageId}`,
       );
 
       await prisma.emailJob.update({
         where: { id: jobId },
         data: { status: "SENT" },
       });
-    } catch (error) {
+    } catch (error: any) {
+      console.error(
+        `❌ [Delivery Failed] Error sending to ${recipient}:`,
+        error?.message || error,
+      );
+
       await prisma.emailJob.update({
         where: { id: jobId },
         data: { status: "FAILED" },
       });
+
       throw error;
     }
   },
   {
     connection,
-    concurrency: 5, // Worker Concurrency
-    limiter: {
-      max: 1,
-      duration: 2000, // Mandatory 2-second delay between emails
-    },
+    concurrency: 5,
   },
 );
 
-worker.on("completed", (job) =>
-  console.log(`Job ${job.id} completed successfully.`),
-);
-worker.on("failed", (job, err) =>
-  console.log(`Job ${job?.id} failed: ${err.message}`),
-);
+emailWorker.on("completed", (job) => {
+  console.log(`[Job Completed] Job ID: ${job.id}`);
+});
 
-console.log("Email Worker is running and listening for jobs...");
+emailWorker.on("failed", (job, err) => {
+  console.error(`[Job Failed] Job ID: ${job?.id}, Reason: ${err.message}`);
+});
+
+console.log("Email Worker is active and waiting for jobs...");
