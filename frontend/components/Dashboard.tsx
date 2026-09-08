@@ -20,13 +20,17 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
+  // 🔴 IMPORTANT: Passed senderId to the backend to filter only current user's emails
   const fetchJobs = async (isSilent = false) => {
     if (!isSilent) setIsRefreshing(true);
 
     try {
+      const encodedEmail = encodeURIComponent(user.email);
       const [resSched, resSent] = await Promise.all([
-        fetch("http://localhost:3001/api/jobs/scheduled"),
-        fetch("http://localhost:3001/api/jobs/sent"),
+        fetch(
+          `http://localhost:3001/api/jobs/scheduled?senderId=${encodedEmail}`,
+        ),
+        fetch(`http://localhost:3001/api/jobs/sent?senderId=${encodedEmail}`),
       ]);
 
       const dataSched = await resSched.json();
@@ -49,7 +53,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [user.email]); // Trigger refetch if user changes
 
   // Filter jobs dynamically across recipient, subject, and body
   const filterList = (list: EmailJob[]) => {

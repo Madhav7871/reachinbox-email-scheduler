@@ -1,103 +1,125 @@
 import express from "express";
-import { PrismaClient } from "@prisma/client";
+import cors from "cors";
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
+import { PrismaClient } from "@prisma/client";
 import dotenv from "dotenv";
-import cors from "cors";
+import path from "path";
 
-dotenv.config();
+// Load environment variables
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 
 const app = express();
+app.use(cors());
 app.use(express.json());
-app.use(cors()); // Enables communication between frontend (3000) and backend (3001)
 
 const prisma = new PrismaClient();
 
-// Connect to Upstash Redis
-const connection = new IORedis(process.env.REDIS_URL as string, {
+const redisConnection = new IORedis(process.env.REDIS_URL as string, {
   maxRetriesPerRequest: null,
 });
 
-// Setup BullMQ Queue
-const emailQueue = new Queue("email-queue", { connection });
+const emailQueue = new Queue("email-queue", { connection: redisConnection });
 
+// ==========================================
+// API: Schedule New Email
+// ==========================================
 app.post("/api/schedule", async (req, res) => {
-  const { emails, subject, body, scheduledAt, senderId, slackToken } = req.body;
+  const { emails, subject, body, scheduledAt, senderId } = req.body;
+
+  if (!emails || !Array.isArray(emails) || emails.length === 0) {
+    return res.status(400).json({ error: "Valid emails array is required" });
+  }
 
   try {
-    const scheduledDate = new Date(scheduledAt);
-    const delayMs = Math.max(scheduledDate.getTime() - Date.now(), 0); // Calculate delay exactly (No Cron)
+    const delay = new Date(scheduledAt).getTime() - Date.now();
+    const finalDelay = delay > 0 ? delay : 0;
 
-    // 1. Save all jobs to PostgreSQL (Supabase)
-    const jobs = await Promise.all(
-      emails.map((recipient: string) =>
-        prisma.emailJob.create({
-          data: {
-            recipient,
-            subject,
-            body,
-            scheduledAt: scheduledDate,
-            senderId,
-            slackToken,
-          },
-        }),
-      ),
-    );
+    let count = 0;
+    for (const email of emails) {
+      // Create DB record and attach senderId
+      const jobRecord = await prisma.emailJob.create({
+        data: {
+          recipient: email,
+          subject,
+          body,
+          senderId: senderId || "unknown", // Saving the tenant's identity
+          status: "SCHEDULED",
+          scheduledAt: new Date(scheduledAt),
+        },
+      });
 
-    // 2. Add to BullMQ with calculated delay
-    const bullJobs = jobs.map((job) => ({
-      name: "send-email",
-      data: {
-        jobId: job.id,
-        recipient: job.recipient,
-        subject: job.subject,
-        body: job.body,
-        senderId: job.senderId,
-        slackToken: job.slackToken,
-      },
-      opts: { delay: delayMs, jobId: job.id }, // jobId pass karna zaroori hai (Idempotency ke liye)
-    }));
+      // Push to BullMQ
+      await emailQueue.add(
+        "send-email",
+        {
+          jobId: jobRecord.id,
+          recipient: email,
+          subject,
+          body,
+          senderId: senderId || "unknown",
+        },
+        { delay: finalDelay },
+      );
+      count++;
+    }
 
-    await emailQueue.addBulk(bullJobs);
-
-    res.status(200).json({
-      success: true,
-      message: "Emails scheduled successfully",
-      count: jobs.length,
-    });
+    res.json({ message: "Scheduled successfully", count });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Failed to schedule jobs" });
+    console.error("Schedule Error:", error);
+    res.status(500).json({ error: "Failed to schedule emails" });
   }
 });
 
-// Get all Scheduled Emails for Dashboard
+// ==========================================
+// API: Fetch Scheduled Jobs (Tenant Isolated)
+// ==========================================
 app.get("/api/jobs/scheduled", async (req, res) => {
+  const { senderId } = req.query;
+
   try {
     const jobs = await prisma.emailJob.findMany({
-      where: { status: "SCHEDULED" },
+      where: {
+        status: "SCHEDULED",
+        // 🔴 IMPORTANT: Filter only records belonging to this senderId
+        ...(senderId ? { senderId: String(senderId) } : {}),
+      },
       orderBy: { scheduledAt: "asc" },
     });
     res.json(jobs);
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching scheduled jobs:", error);
     res.status(500).json({ error: "Failed to fetch scheduled jobs" });
   }
 });
 
-// Get all Sent/Failed Emails for Dashboard
+// ==========================================
+// API: Fetch Sent Jobs (Tenant Isolated)
+// ==========================================
 app.get("/api/jobs/sent", async (req, res) => {
+  const { senderId } = req.query;
+
   try {
     const jobs = await prisma.emailJob.findMany({
-      where: { status: { in: ["SENT", "FAILED"] } },
-      orderBy: { createdAt: "desc" },
+      where: {
+        status: { in: ["SENT", "FAILED"] },
+        // 🔴 IMPORTANT: Filter only records belonging to this senderId
+        ...(senderId ? { senderId: String(senderId) } : {}),
+      },
+      orderBy: { scheduledAt: "desc" },
     });
     res.json(jobs);
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching sent jobs:", error);
     res.status(500).json({ error: "Failed to fetch sent jobs" });
   }
 });
 
+// ==========================================
+// Initialize Server
+// ==========================================
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`API running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Backend API running securely on port ${PORT}`);
+});

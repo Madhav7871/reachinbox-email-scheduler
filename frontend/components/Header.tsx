@@ -30,20 +30,30 @@ export default function Header({
             onClick={() => setShowProfileMenu(!showProfileMenu)}
             className="flex items-center gap-3 bg-[#F8FAFC] hover:bg-slate-100 border border-slate-200/80 px-3 py-1.5 rounded-2xl transition cursor-pointer text-left"
           >
-            <div className="relative">
+            <div className="relative flex items-center justify-center">
+              {/* Image with fallback onError handler */}
               <img
-                src={user.avatar}
+                src={
+                  user.avatar ||
+                  `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name)}&background=00A859&color=fff`
+                }
                 alt={user.name}
-                className="w-8 h-8 rounded-full object-cover border border-slate-200"
+                className="w-8 h-8 rounded-full object-cover border border-slate-200 bg-emerald-50 text-[10px]"
+                onError={(e) => {
+                  e.currentTarget.onerror = null; // Prevent infinite loop if fallback also fails
+                  e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name)}&background=00A859&color=fff`;
+                }}
               />
               <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border-2 border-white rounded-full"></span>
             </div>
+
             <div className="leading-tight">
               <p className="text-xs font-bold text-slate-800">{user.name}</p>
               <p className="text-[10px] text-slate-400 truncate max-w-[140px]">
                 {user.email}
               </p>
             </div>
+
             <svg
               className={`w-3.5 h-3.5 text-slate-400 transition-transform ${showProfileMenu ? "rotate-180" : ""}`}
               fill="none"
@@ -76,7 +86,7 @@ export default function Header({
               <div className="space-y-1 text-xs text-slate-600">
                 <button
                   onClick={() => setShowProfileMenu(false)}
-                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 transition flex items-center justify-between"
+                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 transition flex items-center justify-between cursor-pointer"
                 >
                   <span>Queue Engine</span>
                   <span className="text-[10px] font-bold text-slate-400">
@@ -88,7 +98,7 @@ export default function Header({
                     setShowProfileMenu(false);
                     onLogout();
                   }}
-                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-red-50 text-red-600 font-semibold transition flex items-center gap-2"
+                  className="w-full text-left px-3 py-2 rounded-lg hover:bg-red-50 text-red-600 font-semibold transition flex items-center gap-2 cursor-pointer"
                 >
                   <svg
                     className="w-4 h-4"
@@ -134,12 +144,12 @@ export default function Header({
             placeholder="Search by recipient, subject, or content..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-[#F3F4F6] border-none rounded-full pl-10 pr-10 py-2 text-sm text-slate-800 placeholder-slate-400 focus:bg-white focus:ring-2 focus:ring-emerald-500/30 transition shadow-2xs"
+            className="w-full bg-[#F3F4F6] border-none rounded-full pl-10 pr-10 py-2 text-sm text-slate-800 placeholder-slate-400 focus:bg-white focus:ring-2 focus:ring-[#00A859]/30 transition shadow-2xs"
           />
           {searchQuery && (
             <button
               onClick={() => setSearchQuery("")}
-              className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 text-xs"
+              className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
             >
               ✕
             </button>
