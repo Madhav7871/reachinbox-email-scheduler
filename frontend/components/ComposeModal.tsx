@@ -17,6 +17,10 @@ export default function ComposeModal({
   const [emails, setEmails] = useState<string[]>([]);
   const [emailInput, setEmailInput] = useState("");
 
+  // Tag Collapse State
+  const [isEmailsExpanded, setIsEmailsExpanded] = useState(false);
+  const VISIBLE_EMAILS_LIMIT = 5;
+
   const [delaySec, setDelaySec] = useState<number>(0);
   const [hourlyLimit, setHourlyLimit] = useState<number>(0);
 
@@ -50,7 +54,7 @@ export default function ComposeModal({
       setEmails(uniqueEmails);
     };
     reader.readAsText(file);
-    e.target.value = ""; // Reset input to allow re-uploading same file if needed
+    e.target.value = "";
   };
 
   const handleAddEmail = (e: React.KeyboardEvent) => {
@@ -69,7 +73,6 @@ export default function ComposeModal({
     setEmails(emails.filter((e) => e !== emailToRemove));
   };
 
-  // Rich Text Editor Command Execution
   const executeCommand = (command: string) => {
     document.execCommand(command, false, undefined);
     editorRef.current?.focus();
@@ -100,7 +103,7 @@ export default function ComposeModal({
         body: JSON.stringify({
           emails,
           subject,
-          body, // Sending the formatted HTML body from the editor
+          body,
           scheduledAt,
           senderId: userEmail,
           delaySec: delaySec || 2,
@@ -129,7 +132,6 @@ export default function ComposeModal({
   };
 
   return (
-    // Fixed height wrapper prevents double scrollbars
     <div className="fixed inset-0 z-50 bg-slate-50 flex flex-col h-screen overflow-hidden animate-fade-in font-sans">
       {/* Top Header Navbar */}
       <div className="flex-none flex items-center justify-between px-6 py-4 bg-white border-b border-slate-200 shadow-sm z-10">
@@ -158,7 +160,6 @@ export default function ComposeModal({
         </div>
 
         <div className="flex items-center gap-4">
-          {/* Schedule Popup */}
           <div className="relative">
             <button
               onClick={() => setIsScheduleOpen(!isScheduleOpen)}
@@ -257,7 +258,7 @@ export default function ComposeModal({
         </div>
       </div>
 
-      {/* Main Content Area - Inner Scroll Only */}
+      {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto p-4 md:p-8">
         <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mb-8">
           {error && (
@@ -305,27 +306,54 @@ export default function ComposeModal({
               </div>
             </div>
 
-            {/* To Row with Inline Upload Button */}
+            {/* To Row with Smart Tag Collapse */}
             <div className="flex flex-col sm:flex-row sm:items-start px-8 py-4 focus-within:bg-slate-50/50 transition relative">
               <span className="w-32 text-sm font-bold text-slate-500 pt-2 mb-2 sm:mb-0">
                 To
               </span>
 
               <div className="flex-1 flex flex-wrap gap-2 items-center min-h-[36px] sm:pr-32">
-                {emails.map((email) => (
-                  <span
-                    key={email}
-                    className="bg-emerald-50 text-emerald-700 border border-emerald-100 text-sm font-semibold px-3 py-1 rounded-md flex items-center gap-2 shadow-sm"
-                  >
-                    {email}
-                    <button
-                      onClick={() => removeEmail(email)}
-                      className="text-emerald-400 hover:text-emerald-600 transition"
+                {/* Dynamically slice array based on expansion state */}
+                {emails
+                  .slice(
+                    0,
+                    isEmailsExpanded ? emails.length : VISIBLE_EMAILS_LIMIT,
+                  )
+                  .map((email) => (
+                    <span
+                      key={email}
+                      className="bg-emerald-50 text-emerald-700 border border-emerald-100 text-sm font-semibold px-3 py-1 rounded-md flex items-center gap-2 shadow-sm transition-all"
                     >
-                      ✕
-                    </button>
-                  </span>
-                ))}
+                      {email}
+                      <button
+                        onClick={() => removeEmail(email)}
+                        className="text-emerald-400 hover:text-emerald-600 transition"
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+
+                {/* Show "+X more" if collapsed and limit exceeded */}
+                {!isEmailsExpanded && emails.length > VISIBLE_EMAILS_LIMIT && (
+                  <button
+                    onClick={() => setIsEmailsExpanded(true)}
+                    className="bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 text-sm font-bold px-3 py-1 rounded-md transition shadow-sm"
+                  >
+                    +{emails.length - VISIBLE_EMAILS_LIMIT} more
+                  </button>
+                )}
+
+                {/* Show "Show less" if expanded */}
+                {isEmailsExpanded && emails.length > VISIBLE_EMAILS_LIMIT && (
+                  <button
+                    onClick={() => setIsEmailsExpanded(false)}
+                    className="bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 text-sm font-bold px-3 py-1 rounded-md transition shadow-sm"
+                  >
+                    Show less
+                  </button>
+                )}
+
                 <input
                   type="email"
                   value={emailInput}
@@ -334,9 +362,9 @@ export default function ComposeModal({
                   placeholder={
                     emails.length === 0
                       ? "recipient@example.com (Press Enter)"
-                      : ""
+                      : "Add email..."
                   }
-                  className="flex-1 min-w-[250px] outline-none text-sm text-slate-800 py-1.5 placeholder-slate-300 bg-transparent"
+                  className="flex-1 min-w-[200px] outline-none text-sm text-slate-800 py-1.5 placeholder-slate-300 bg-transparent"
                 />
               </div>
 
@@ -426,7 +454,6 @@ export default function ComposeModal({
 
             {/* Editor Area */}
             <div className="flex flex-col relative group">
-              {/* Working Toolbar */}
               <div className="flex items-center gap-4 px-8 py-3 bg-slate-50 border-b border-slate-100 text-slate-500 select-none">
                 <button
                   type="button"
@@ -516,7 +543,6 @@ export default function ComposeModal({
                 </button>
               </div>
 
-              {/* Actual ContentEditable Rich Text Editor */}
               <div
                 ref={editorRef}
                 contentEditable
