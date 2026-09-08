@@ -1,10 +1,10 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 interface ComposeModalProps {
   userEmail: string;
   onClose: () => void;
-  onSuccess: (message?: string) => void;
+  onSuccess: (msg?: string) => void;
 }
 
 export default function ComposeModal({
@@ -12,44 +12,31 @@ export default function ComposeModal({
   onClose,
   onSuccess,
 }: ComposeModalProps) {
-  const [emails, setEmails] = useState<string[]>([]);
-  const [currentInput, setCurrentInput] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  const [emails, setEmails] = useState<string[]>([]);
+  const [emailInput, setEmailInput] = useState("");
+
+  const [delaySec, setDelaySec] = useState<number>(0);
+  const [hourlyLimit, setHourlyLimit] = useState<number>(0);
+
   const [scheduledAt, setScheduledAt] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isScheduleOpen, setIsScheduleOpen] = useState(false);
+  const [tempSchedule, setTempSchedule] = useState("");
 
-  // Strict email validation regex
-  const isValidEmail = (email: string) =>
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
-  // Handle typing recipients with chips (Comma/Space/Enter trigger)
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (["Enter", ",", " "].includes(e.key)) {
-      e.preventDefault();
-      const trimmed = currentInput.trim().replace(/,/g, "");
-      if (trimmed) {
-        if (isValidEmail(trimmed)) {
-          if (!emails.includes(trimmed)) {
-            setEmails([...emails, trimmed]);
-            setCurrentInput("");
-            setErrorMsg(null);
-          } else {
-            setErrorMsg("Email already added.");
-          }
-        } else {
-          setErrorMsg(`"${trimmed}" is not a valid email address.`);
-        }
-      }
-    }
-  };
+  const editorRef = useRef<HTMLDivElement>(null);
 
-  const removeEmail = (indexToRemove: number) => {
-    setEmails(emails.filter((_, idx) => idx !== indexToRemove));
-  };
+  useEffect(() => {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    const formatted = now.toISOString().slice(0, 16);
+    setScheduledAt(formatted);
+    setTempSchedule(formatted);
+  }, []);
 
-  // File Upload Handler for CSV/TXT with Validation
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -57,222 +44,488 @@ export default function ComposeModal({
     const reader = new FileReader();
     reader.onload = (event) => {
       const text = event.target?.result as string;
-      const extracted =
-        text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
-
-      const validExtracted = extracted.filter(isValidEmail);
-      const uniqueEmails = Array.from(new Set([...emails, ...validExtracted]));
-
-      if (uniqueEmails.length > emails.length) {
-        setEmails(uniqueEmails);
-        setErrorMsg(null);
-      } else {
-        setErrorMsg("No valid new emails found in file.");
-      }
+      const extractedEmails =
+        text.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/gi) || [];
+      const uniqueEmails = Array.from(new Set([...emails, ...extractedEmails]));
+      setEmails(uniqueEmails);
     };
     reader.readAsText(file);
+    e.target.value = ""; // Reset input to allow re-uploading same file if needed
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    let finalEmails = [...emails];
-    const leftover = currentInput.trim();
-    if (leftover) {
-      if (isValidEmail(leftover) && !finalEmails.includes(leftover)) {
-        finalEmails.push(leftover);
+  const handleAddEmail = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      const newEmail = emailInput.trim();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (emailRegex.test(newEmail) && !emails.includes(newEmail)) {
+        setEmails([...emails, newEmail]);
+        setEmailInput("");
       }
     }
+  };
 
-    if (finalEmails.length === 0) {
-      setErrorMsg("Please enter at least one valid recipient email.");
-      return;
+  const removeEmail = (emailToRemove: string) => {
+    setEmails(emails.filter((e) => e !== emailToRemove));
+  };
+
+  // Rich Text Editor Command Execution
+  const executeCommand = (command: string) => {
+    document.execCommand(command, false, undefined);
+    editorRef.current?.focus();
+    if (editorRef.current) {
+      setBody(editorRef.current.innerHTML);
     }
+  };
 
-    setLoading(true);
-    setErrorMsg(null);
+  const handleEditorInput = () => {
+    if (editorRef.current) {
+      setBody(editorRef.current.innerHTML);
+    }
+  };
 
+  const handleSubmit = async () => {
+    setError("");
+    if (emails.length === 0)
+      return setError("Please add at least one recipient.");
+    if (!scheduledAt) return setError("Please select a schedule time.");
+    if (!body || body === "<br>")
+      return setError("Please enter email body content.");
+
+    setIsSubmitting(true);
     try {
-      const payload = {
-        emails: finalEmails,
-        subject,
-        body,
-        senderId: userEmail,
-        scheduledAt: scheduledAt
-          ? new Date(scheduledAt).toISOString()
-          : new Date().toISOString(),
-      };
-
       const res = await fetch("http://localhost:3001/api/schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          emails,
+          subject,
+          body, // Sending the formatted HTML body from the editor
+          scheduledAt,
+          senderId: userEmail,
+          delaySec: delaySec || 2,
+          hourlyLimit: hourlyLimit || 200,
+        }),
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to schedule emails");
-
-      // Trigger global bottom-right toast message via parent callback
-      onSuccess(
-        data.message ||
-          `Successfully scheduled ${finalEmails.length} campaign(s)!`,
-      );
-    } catch (error: any) {
-      console.error(error);
-      setErrorMsg(error.message || "Error scheduling emails");
-      setLoading(false);
+      if (!res.ok) throw new Error(data.error || "Failed to schedule");
+      onSuccess(data.message);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
+  const quickSchedule = (daysToAdd: number, hour?: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + daysToAdd);
+    if (hour !== undefined) {
+      d.setHours(hour, 0, 0, 0);
+    }
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    setTempSchedule(d.toISOString().slice(0, 16));
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-900/50 backdrop-blur-sm">
-      <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden border border-slate-100 relative">
-        {/* Header */}
-        <div className="px-8 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/80">
-          <h3 className="font-extrabold text-lg text-slate-800 tracking-tight flex items-center gap-2">
-            <span>Compose New Campaign</span>
-          </h3>
+    // Fixed height wrapper prevents double scrollbars
+    <div className="fixed inset-0 z-50 bg-slate-50 flex flex-col h-screen overflow-hidden animate-fade-in font-sans">
+      {/* Top Header Navbar */}
+      <div className="flex-none flex items-center justify-between px-6 py-4 bg-white border-b border-slate-200 shadow-sm z-10">
+        <div className="flex items-center gap-4">
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-slate-700 hover:bg-slate-200/50 w-8 h-8 rounded-full flex items-center justify-center transition cursor-pointer"
+            className="p-2 -ml-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition"
           >
-            ✕
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M10 19l-7-7m0 0l7-7m-7 7h18"
+              />
+            </svg>
           </button>
+          <h2 className="text-lg font-bold text-slate-800 tracking-tight">
+            Compose New Campaign
+          </h2>
         </div>
 
-        {/* Form Body */}
-        <form
-          onSubmit={handleSubmit}
-          className="p-8 flex-1 overflow-y-auto space-y-5 custom-scrollbar"
-        >
-          {errorMsg && (
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-600 text-xs font-semibold">
-              ⚠️ {errorMsg}
+        <div className="flex items-center gap-4">
+          {/* Schedule Popup */}
+          <div className="relative">
+            <button
+              onClick={() => setIsScheduleOpen(!isScheduleOpen)}
+              className={`p-2 rounded-full transition ${isScheduleOpen ? "bg-emerald-50 text-[#00A859]" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100"}`}
+              title="Schedule Time"
+            >
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+            </button>
+
+            {isScheduleOpen && (
+              <div className="absolute right-0 top-12 w-72 bg-white rounded-xl shadow-xl border border-slate-200 p-5 z-50">
+                <h3 className="text-sm font-bold text-slate-800 mb-4">
+                  Schedule Campaign
+                </h3>
+                <div className="mb-4">
+                  <input
+                    type="datetime-local"
+                    value={tempSchedule}
+                    onChange={(e) => setTempSchedule(e.target.value)}
+                    className="w-full text-sm text-slate-700 border border-slate-200 rounded-lg py-2.5 px-3 outline-none focus:border-[#00A859] focus:ring-1 focus:ring-[#00A859]"
+                  />
+                </div>
+                <div className="space-y-1 mb-5">
+                  <button
+                    onClick={() => quickSchedule(1)}
+                    className="block w-full text-left text-sm text-slate-600 hover:text-[#00A859] hover:bg-emerald-50 rounded-md px-3 py-2"
+                  >
+                    Tomorrow
+                  </button>
+                  <button
+                    onClick={() => quickSchedule(1, 10)}
+                    className="block w-full text-left text-sm text-slate-600 hover:text-[#00A859] hover:bg-emerald-50 rounded-md px-3 py-2"
+                  >
+                    Tomorrow, 10:00 AM
+                  </button>
+                  <button
+                    onClick={() => quickSchedule(1, 15)}
+                    className="block w-full text-left text-sm text-slate-600 hover:text-[#00A859] hover:bg-emerald-50 rounded-md px-3 py-2"
+                  >
+                    Tomorrow, 3:00 PM
+                  </button>
+                </div>
+                <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
+                  <button
+                    onClick={() => setIsScheduleOpen(false)}
+                    className="text-sm font-semibold text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-md hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      setScheduledAt(tempSchedule);
+                      setIsScheduleOpen(false);
+                    }}
+                    className="text-sm font-semibold text-white bg-[#00A859] px-5 py-1.5 rounded-lg hover:bg-[#00924D] shadow-sm"
+                  >
+                    Set Time
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={handleSubmit}
+            disabled={isSubmitting}
+            className="px-6 py-2 text-sm font-bold text-white bg-[#00A859] rounded-lg shadow-sm hover:bg-[#00924D] transition disabled:opacity-50 flex items-center gap-2"
+          >
+            {isSubmitting ? "Scheduling..." : "Send Campaign"}
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M5 12h14M12 5l7 7-7 7"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content Area - Inner Scroll Only */}
+      <div className="flex-1 overflow-y-auto p-4 md:p-8">
+        <div className="max-w-5xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden mb-8">
+          {error && (
+            <div className="m-6 mb-0 p-4 bg-rose-50 border border-rose-100 rounded-xl text-rose-600 text-sm font-semibold flex items-center gap-2">
+              <svg
+                className="w-5 h-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              {error}
             </div>
           )}
 
-          {/* CSV File Upload Box */}
-          <div className="p-5 border border-dashed border-emerald-300 bg-[#F2FAF5] rounded-2xl flex items-center justify-between transition-colors hover:bg-emerald-50/80">
-            <div>
-              <p className="text-sm font-bold text-emerald-800">
-                Import Leads (CSV/TXT)
-              </p>
-              <p className="text-xs font-medium text-emerald-600/80 mt-1">
-                {emails.length > 0
-                  ? `✅ ${emails.length} valid recipient(s) added`
-                  : "Upload file to auto-extract valid emails"}
-              </p>
-            </div>
-            <label className="bg-white border border-emerald-200 text-emerald-700 px-5 py-2 rounded-xl text-xs font-bold cursor-pointer hover:bg-emerald-50 transition shadow-sm">
-              Choose File
-              <input
-                type="file"
-                accept=".csv, .txt"
-                className="hidden"
-                onChange={handleFileUpload}
-              />
-            </label>
-          </div>
-
-          {/* Professional Mailbox Chip Input for Recipients */}
-          <div>
-            <label className="block text-[11px] font-black text-slate-500 mb-2 uppercase tracking-widest">
-              Recipients
-            </label>
-            <div className="w-full min-h-[50px] px-4 py-2.5 rounded-2xl bg-[#F4F6F8] border-none flex flex-wrap items-center gap-2 shadow-inner focus-within:ring-2 focus-within:ring-[#00A859]/40 transition">
-              {emails.map((email, idx) => (
-                <span
-                  key={idx}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold"
-                >
-                  {email}
-                  <button
-                    type="button"
-                    onClick={() => removeEmail(idx)}
-                    className="hover:text-rose-600 transition cursor-pointer"
-                  >
-                    ✕
-                  </button>
+          <div className="divide-y divide-slate-100">
+            {/* From Row */}
+            <div className="flex flex-col sm:flex-row sm:items-center px-8 py-4 focus-within:bg-slate-50/50 transition">
+              <span className="w-32 text-sm font-bold text-slate-500 mb-2 sm:mb-0">
+                From
+              </span>
+              <div className="flex items-center gap-2 bg-slate-100 border border-slate-200 rounded-lg px-3 py-1.5 cursor-not-allowed select-none w-fit">
+                <span className="text-sm font-semibold text-slate-700">
+                  {userEmail}
                 </span>
-              ))}
+                <svg
+                  className="w-4 h-4 text-slate-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    d="M19 9l-7 7-7-7"
+                  />
+                </svg>
+              </div>
+            </div>
+
+            {/* To Row with Inline Upload Button */}
+            <div className="flex flex-col sm:flex-row sm:items-start px-8 py-4 focus-within:bg-slate-50/50 transition relative">
+              <span className="w-32 text-sm font-bold text-slate-500 pt-2 mb-2 sm:mb-0">
+                To
+              </span>
+
+              <div className="flex-1 flex flex-wrap gap-2 items-center min-h-[36px] sm:pr-32">
+                {emails.map((email) => (
+                  <span
+                    key={email}
+                    className="bg-emerald-50 text-emerald-700 border border-emerald-100 text-sm font-semibold px-3 py-1 rounded-md flex items-center gap-2 shadow-sm"
+                  >
+                    {email}
+                    <button
+                      onClick={() => removeEmail(email)}
+                      className="text-emerald-400 hover:text-emerald-600 transition"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+                <input
+                  type="email"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  onKeyDown={handleAddEmail}
+                  placeholder={
+                    emails.length === 0
+                      ? "recipient@example.com (Press Enter)"
+                      : ""
+                  }
+                  className="flex-1 min-w-[250px] outline-none text-sm text-slate-800 py-1.5 placeholder-slate-300 bg-transparent"
+                />
+              </div>
+
+              {/* Upload List Button */}
+              <div className="sm:absolute sm:right-8 sm:top-5 mt-3 sm:mt-0">
+                <label className="cursor-pointer text-[#00A859] hover:text-[#00924D] text-sm font-bold flex items-center gap-1.5 transition select-none">
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
+                    />
+                  </svg>
+                  Upload List
+                  <input
+                    type="file"
+                    accept=".csv,.txt"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Subject Row */}
+            <div className="flex flex-col sm:flex-row sm:items-center px-8 py-4 focus-within:bg-slate-50/50 transition">
+              <span className="w-32 text-sm font-bold text-slate-500 mb-2 sm:mb-0">
+                Subject
+              </span>
               <input
-                type="email"
-                placeholder={
-                  emails.length === 0
-                    ? "Type valid email & press space/comma..."
-                    : "Add more..."
-                }
-                value={currentInput}
-                onChange={(e) => setCurrentInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                className="flex-1 bg-transparent border-none text-slate-900 text-sm focus:outline-none min-w-[200px]"
+                type="text"
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="Enter campaign subject"
+                className="flex-1 outline-none text-sm font-medium text-slate-800 placeholder-slate-300 bg-transparent"
               />
             </div>
-            <span className="text-[10px] text-slate-400 mt-1 block">
-              Only valid email formats are accepted. Press space, comma, or
-              enter to add.
-            </span>
-          </div>
 
-          <div>
-            <label className="block text-[11px] font-black text-slate-500 mb-2 uppercase tracking-widest">
-              Subject
-            </label>
-            <input
-              type="text"
-              placeholder="Campaign Subject"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              className="w-full px-5 py-3 rounded-2xl bg-[#F4F6F8] border-none text-slate-900 text-sm focus:ring-2 focus:ring-[#00A859]/40 transition shadow-inner"
-              required
-            />
-          </div>
+            {/* Limits Row */}
+            <div className="flex flex-col sm:flex-row sm:items-center px-8 py-4 focus-within:bg-slate-50/50 transition gap-8">
+              <div className="flex items-center gap-4">
+                <span className="text-sm font-bold text-slate-500">
+                  Delay between emails
+                </span>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0"
+                    value={delaySec === 0 ? "" : delaySec}
+                    onChange={(e) => setDelaySec(Number(e.target.value))}
+                    placeholder="2"
+                    className="w-20 border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-center outline-none focus:border-[#00A859] focus:ring-1 focus:ring-[#00A859] bg-white"
+                  />
+                  <span className="absolute right-3 top-2.5 text-xs font-semibold text-slate-400">
+                    sec
+                  </span>
+                </div>
+              </div>
 
-          <div>
-            <label className="block text-[11px] font-black text-slate-500 mb-2 uppercase tracking-widest">
-              Schedule Date & Time
-            </label>
-            <input
-              type="datetime-local"
-              value={scheduledAt}
-              onChange={(e) => setScheduledAt(e.target.value)}
-              className="w-full px-5 py-3 rounded-2xl bg-[#F4F6F8] border-none text-slate-900 text-sm focus:ring-2 focus:ring-[#00A859]/40 transition shadow-inner"
-              required
-            />
-          </div>
+              <div className="hidden sm:block w-px h-8 bg-slate-200"></div>
 
-          <div>
-            <label className="block text-[11px] font-black text-slate-500 mb-2 uppercase tracking-widest">
-              Email Content
-            </label>
-            <textarea
-              placeholder="Write your email body here..."
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={5}
-              className="w-full px-5 py-4 rounded-2xl bg-[#F4F6F8] border-none text-slate-900 text-sm focus:ring-2 focus:ring-[#00A859]/40 transition shadow-inner resize-none"
-              required
-            />
-          </div>
+              <div className="flex items-center gap-4">
+                <span className="text-sm font-bold text-slate-500">
+                  Hourly Limit
+                </span>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0"
+                    value={hourlyLimit === 0 ? "" : hourlyLimit}
+                    onChange={(e) => setHourlyLimit(Number(e.target.value))}
+                    placeholder="200"
+                    className="w-24 border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-center outline-none focus:border-[#00A859] focus:ring-1 focus:ring-[#00A859] bg-white"
+                  />
+                  <span className="absolute right-3 top-2.5 text-xs font-semibold text-slate-400">
+                    /hr
+                  </span>
+                </div>
+              </div>
+            </div>
 
-          {/* Action Buttons */}
-          <div className="pt-6 pb-2 flex justify-end gap-3 border-t border-slate-100 mt-6">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-6 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-8 py-3 bg-[#00A859] hover:bg-[#00924D] text-white text-sm font-extrabold rounded-xl shadow-lg hover:shadow-xl transition disabled:opacity-50 cursor-pointer"
-            >
-              {loading ? "Processing..." : "Schedule Campaign"}
-            </button>
+            {/* Editor Area */}
+            <div className="flex flex-col relative group">
+              {/* Working Toolbar */}
+              <div className="flex items-center gap-4 px-8 py-3 bg-slate-50 border-b border-slate-100 text-slate-500 select-none">
+                <button
+                  type="button"
+                  onClick={() => executeCommand("undo")}
+                  className="hover:text-slate-800 transition p-1"
+                  title="Undo"
+                >
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
+                    />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => executeCommand("redo")}
+                  className="hover:text-slate-800 transition p-1"
+                  title="Redo"
+                >
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6"
+                    />
+                  </svg>
+                </button>
+                <span className="w-px h-5 bg-slate-300"></span>
+                <button
+                  type="button"
+                  onClick={() => executeCommand("bold")}
+                  className="hover:text-slate-800 transition font-black text-sm p-1 w-6"
+                  title="Bold"
+                >
+                  B
+                </button>
+                <button
+                  type="button"
+                  onClick={() => executeCommand("italic")}
+                  className="hover:text-slate-800 transition italic text-sm font-bold p-1 w-6"
+                  title="Italic"
+                >
+                  I
+                </button>
+                <button
+                  type="button"
+                  onClick={() => executeCommand("underline")}
+                  className="hover:text-slate-800 transition underline text-sm font-bold p-1 w-6"
+                  title="Underline"
+                >
+                  U
+                </button>
+                <span className="w-px h-5 bg-slate-300"></span>
+                <button
+                  type="button"
+                  onClick={() => executeCommand("insertUnorderedList")}
+                  className="hover:text-slate-800 transition p-1"
+                  title="Bullet List"
+                >
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M4 6h16M4 12h16M4 18h7"
+                    />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Actual ContentEditable Rich Text Editor */}
+              <div
+                ref={editorRef}
+                contentEditable
+                onInput={handleEditorInput}
+                className="w-full min-h-[300px] px-8 py-6 outline-none text-sm font-medium text-slate-800 bg-white leading-relaxed focus:bg-slate-50/30 transition custom-scrollbar empty:before:content-['Type_your_email_content_here...'] empty:before:text-slate-300"
+              />
+            </div>
           </div>
-        </form>
+        </div>
       </div>
     </div>
   );
