@@ -41,6 +41,35 @@ createBullBoard({
 app.use("/admin/queues", serverAdapter.getRouter());
 
 // ==========================================
+// API: Save or Update Slack Webhook Setting
+// ==========================================
+app.post("/api/settings/slack", async (req, res) => {
+  const { senderId, slackWebhook } = req.body;
+
+  if (!senderId) {
+    return res.status(400).json({ error: "Sender ID is required" });
+  }
+
+  try {
+    const settings = await prisma.userSettings.upsert({
+      where: { senderId },
+      update: { slackWebhook },
+      create: { senderId, slackWebhook },
+    });
+
+    res.json({
+      success: true,
+      message:
+        "Slack workspace connected successfully! Rate limit alerts will now be sent to your Slack channel.",
+      settings,
+    });
+  } catch (error) {
+    console.error("Error saving Slack webhook:", error);
+    res.status(500).json({ error: "Failed to save Slack settings" });
+  }
+});
+
+// ==========================================
 // API: Schedule New Email (With Detailed Response)
 // ==========================================
 app.post("/api/schedule", async (req, res) => {
