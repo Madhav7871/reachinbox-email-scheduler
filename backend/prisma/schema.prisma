@@ -1,0 +1,20 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model EmailJob {
+  id          String   @id @default(uuid())
+  recipient   String
+  subject     String
+  body        String
+  status      String   @default("SCHEDULED")
+  scheduledAt DateTime
+  senderId    String
+  slackToken  String?
+  createdAt   DateTime @default(now())
+}
