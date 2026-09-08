@@ -42,8 +42,19 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
       const dataSched = await resSched.json();
       const dataSent = await resSent.json();
 
-      if (Array.isArray(dataSched)) setScheduledJobs(dataSched);
-      if (Array.isArray(dataSent)) setSentJobs(dataSent);
+      if (Array.isArray(dataSched)) {
+        setScheduledJobs(dataSched);
+      }
+      if (Array.isArray(dataSent)) {
+        // Trigger success toast if background worker successfully processed and moved emails to sent
+        if (dataSent.length > sentJobs.length && sentJobs.length > 0) {
+          setToast({
+            message: `Successfully processed and delivered ${dataSent.length - sentJobs.length} email(s) from queue!`,
+            type: "success",
+          });
+        }
+        setSentJobs(dataSent);
+      }
     } catch (err) {
       console.error("Failed to fetch jobs", err);
     } finally {
@@ -108,7 +119,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           onRefresh={() => {
             fetchJobs(false);
             setToast({
-              message: "Jobs list refreshed successfully.",
+              message: "Dashboard job lists refreshed successfully.",
               type: "success",
             });
           }}
@@ -123,14 +134,14 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
             setIsComposeOpen(false);
             fetchJobs(false);
             setToast({
-              message: msg || "Campaign successfully queued!",
+              message: msg || "Campaign successfully queued and scheduled!",
               type: "success",
             });
           }}
         />
       )}
 
-      {/* Global Bottom-Right Toast Popup */}
+      {/* Global Bottom-Right Clean Light Theme Toast Popup */}
       {toast && (
         <Toast
           message={toast.message}

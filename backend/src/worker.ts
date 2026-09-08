@@ -78,17 +78,18 @@ const emailWorker = new Worker(
       await connection.expire(rateLimitKey, 3600 * 2);
     }
 
-    // 🔴 RATE LIMIT CHECK: Safe Rescheduling via DB & Queue Delay
+    // 🔴 ACCURATE RATE LIMIT CHECK & PRECISE RESCHEDULING FIX
     if (sentCountThisHour > MAX_EMAILS_PER_HOUR) {
       console.log(`⚠️ [Rate Limit] Sender ${senderId} exceeded limit.`);
 
-      const nextHourTimestamp = currentHour + 60 * 60 * 1000;
-      const delayTime = nextHourTimestamp - Date.now();
+      // Compute exact accurate timestamp 1 hour from RIGHT NOW instead of round-off hours
+      const preciseNextTime = Date.now() + 60 * 60 * 1000;
+      const delayTime = preciseNextTime - Date.now();
 
-      // Update Database so UI shows the correct rescheduled time
+      // Update Database so UI shows the exact accurate rescheduled time
       await prisma.emailJob.update({
         where: { id: jobId },
-        data: { scheduledAt: new Date(nextHourTimestamp) },
+        data: { scheduledAt: new Date(preciseNextTime) },
       });
 
       // Notify Slack once per hour window
@@ -98,9 +99,9 @@ const emailWorker = new Worker(
         await notifySlack(senderId, MAX_EMAILS_PER_HOUR);
       }
 
-      // Change job delay dynamically and throw error to safely re-queue it
+      // Change job delay precisely
       await job.changeDelay(delayTime > 0 ? delayTime : 3600000);
-      throw new Error(`Rate limit hit. Rescheduled to next hour.`);
+      throw new Error(`Rate limit hit. Rescheduled accurately.`);
     }
 
     // Send Email via Ethereal SMTP
