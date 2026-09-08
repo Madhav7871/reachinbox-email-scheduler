@@ -15,6 +15,12 @@ export default function Header({
   searchQuery,
   setSearchQuery,
 }: HeaderProps) {
+  const profileUser = user as typeof user & {
+    avatar?: string;
+    photoURL?: string;
+    displayName?: string;
+  };
+
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isSlackModalOpen, setIsSlackModalOpen] = useState(false);
   const [slackWebhook, setSlackWebhook] = useState("");
@@ -118,15 +124,15 @@ export default function Header({
           <img
             src={
               user.avatar ||
-              user.photoURL ||
-              `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || user.displayName || "User")}&background=00A859&color=fff`
+              profileUser.photoURL ||
+              `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || "User")}&background=00A859&color=fff`
             }
             alt="Profile"
             className="w-10 h-10 rounded-full object-cover shadow-sm border border-slate-100"
           />
           <div className="text-left hidden lg:block">
             <p className="text-sm font-bold text-slate-800 leading-tight group-hover:text-[#00A859] transition-colors">
-              {user.name || user.displayName || "User"}
+              {user.name || "User"}
             </p>
             <p className="text-[10px] text-slate-400 font-medium truncate max-w-[140px]">
               {user.email}
@@ -152,7 +158,7 @@ export default function Header({
           <div className="absolute right-0 mt-3 w-56 bg-white rounded-2xl shadow-xl border border-slate-100 py-2 z-50 animate-slide-up">
             <div className="px-4 py-3 border-b border-slate-100 lg:hidden">
               <p className="text-sm font-bold text-slate-800">
-                {user.name || user.displayName || "User"}
+                {user.name || profileUser.displayName || "User"}
               </p>
               <p className="text-[10px] text-slate-400 truncate mt-0.5">
                 {user.email}
