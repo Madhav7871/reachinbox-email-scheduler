@@ -6,19 +6,16 @@ import { PrismaClient } from "@prisma/client";
 import dotenv from "dotenv";
 import path from "path";
 
-// Bull-board imports for live queue visibility
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { ExpressAdapter } from "@bull-board/express";
 
-// Elasticsearch / OpenSearch helpers
 import {
   initElasticsearch,
   indexEmail,
   searchEmailsInES,
 } from "./elasticsearch";
 
-// Load environment variables
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 
@@ -34,9 +31,7 @@ const redisConnection = new IORedis(process.env.REDIS_URL as string, {
 
 const emailQueue = new Queue("email-queue", { connection: redisConnection });
 
-// ==========================================
-// Live BullMQ Admin Dashboard Setup
-// ==========================================
+// Admin Dashboard Setup
 const serverAdapter = new ExpressAdapter();
 serverAdapter.setBasePath("/admin/queues");
 
@@ -47,9 +42,7 @@ createBullBoard({
 
 app.use("/admin/queues", serverAdapter.getRouter());
 
-// ==========================================
-// API: Save or Update Slack Webhook Setting
-// ==========================================
+// Slack Settings API
 app.post("/api/settings/slack", async (req, res) => {
   const { senderId, slackWebhook } = req.body;
 
@@ -66,8 +59,7 @@ app.post("/api/settings/slack", async (req, res) => {
 
     res.json({
       success: true,
-      message:
-        "Slack workspace connected successfully! Rate limit alerts will now be sent to your Slack channel.",
+      message: "Slack workspace connected successfully!",
       settings,
     });
   } catch (error) {
@@ -76,23 +68,39 @@ app.post("/api/settings/slack", async (req, res) => {
   }
 });
 
-// ==========================================
-// API: Schedule New Emails (With Elasticsearch Sync)
-// ==========================================
+// Schedule API
 app.post("/api/schedule", async (req, res) => {
-  const { emails, subject, body, scheduledAt, senderId } = req.body;
+  const {
+    emails,
+    subject,
+    body,
+    scheduledAt,
+    senderId,
+    delaySec,
+    hourlyLimit,
+  } = req.body;
 
   if (!emails || !Array.isArray(emails) || emails.length === 0) {
     return res.status(400).json({ error: "Valid emails array is required" });
   }
 
   try {
-    const delay = new Date(scheduledAt).getTime() - Date.now();
+    const targetTime = new Date(scheduledAt).getTime();
+    const delay = targetTime - Date.now();
     const finalDelay = delay > 0 ? delay : 0;
 
+    const perEmailDelayMs = (Number(delaySec) || 1) * 1000;
+    const effectiveLimit = Number(hourlyLimit) > 0 ? Number(hourlyLimit) : 500;
+
     let count = 0;
-    for (const email of emails) {
-      // 1. Persist in Relational Database
+    for (let i = 0; i < emails.length; i++) {
+      const email = emails[i];
+
+      // Stagger jobs if multiple emails scheduled together
+      const individualDelay = finalDelay + i * perEmailDelayMs;
+      const effectiveScheduledAt = new Date(Date.now() + individualDelay);
+
+      // 1. Persist in Database
       const jobRecord = await prisma.emailJob.create({
         data: {
           recipient: email,
@@ -100,14 +108,18 @@ app.post("/api/schedule", async (req, res) => {
           body,
           senderId: senderId || "unknown",
           status: "SCHEDULED",
-          scheduledAt: new Date(scheduledAt),
+          scheduledAt: effectiveScheduledAt,
         },
       });
 
-      // 2. Index immediately into Elasticsearch / OpenSearch
-      await indexEmail(jobRecord);
+      // 2. Sync to Elasticsearch
+      try {
+        await indexEmail(jobRecord);
+      } catch (e) {
+        console.warn("ES indexing skipped:", e);
+      }
 
-      // 3. Push to BullMQ persistent queue
+      // 3. Add to BullMQ with custom limits passed
       await emailQueue.add(
         "send-email",
         {
@@ -116,17 +128,17 @@ app.post("/api/schedule", async (req, res) => {
           subject,
           body,
           senderId: senderId || "unknown",
+          hourlyLimit: effectiveLimit,
+          delaySec: Number(delaySec) || 1,
         },
-        { delay: finalDelay },
+        { delay: individualDelay },
       );
       count++;
     }
 
-    const maxLimit = parseInt(process.env.MAX_EMAILS_PER_HOUR || "200", 10);
-
     res.json({
       success: true,
-      message: `Successfully scheduled ${count} email(s)! If hourly limit (${maxLimit}/hr) is reached, excess emails will automatically be rescheduled to the next hour window.`,
+      message: `Successfully scheduled ${count} email(s)!`,
       count,
     });
   } catch (error) {
@@ -135,9 +147,7 @@ app.post("/api/schedule", async (req, res) => {
   }
 });
 
-// ==========================================
-// API: Fetch Scheduled Jobs (Tenant Isolated)
-// ==========================================
+// Scheduled Jobs Fetch
 app.get("/api/jobs/scheduled", async (req, res) => {
   const { senderId } = req.query;
 
@@ -156,9 +166,7 @@ app.get("/api/jobs/scheduled", async (req, res) => {
   }
 });
 
-// ==========================================
-// API: Fetch Sent Jobs (Tenant Isolated)
-// ==========================================
+// Sent Jobs Fetch
 app.get("/api/jobs/sent", async (req, res) => {
   const { senderId } = req.query;
 
@@ -177,15 +185,12 @@ app.get("/api/jobs/sent", async (req, res) => {
   }
 });
 
-// ==========================================
-// API: Search Emails via Elasticsearch (With Fallback)
-// ==========================================
+// Search API
 app.get("/api/emails/search", async (req, res) => {
   const { q, senderId } = req.query;
 
   if (!q) return res.json([]);
 
-  // 1. Query Elasticsearch full-text fuzzy index
   const esResults = await searchEmailsInES(
     String(q),
     senderId ? String(senderId) : undefined,
@@ -194,7 +199,6 @@ app.get("/api/emails/search", async (req, res) => {
     return res.json(esResults);
   }
 
-  // 2. Resilient Database Fallback
   try {
     const dbResults = await prisma.emailJob.findMany({
       where: {
@@ -214,16 +218,10 @@ app.get("/api/emails/search", async (req, res) => {
   }
 });
 
-// Initialize Elasticsearch index on startup
 initElasticsearch();
 
-// ==========================================
-// Start Server
-// ==========================================
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`✅ Backend API running securely on port ${PORT}`);
-  console.log(
-    `📊 BullMQ Live Dashboard: http://localhost:${PORT}/admin/queues`,
-  );
+  console.log(`✅ Backend API running on port ${PORT}`);
+  console.log(`📊 BullMQ Dashboard: http://localhost:${PORT}/admin/queues`);
 });

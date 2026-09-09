@@ -17,38 +17,58 @@ const connection = new IORedis(process.env.REDIS_URL as string, {
   maxRetriesPerRequest: null,
 });
 
-// Queue instance for safe job rescheduling without crashes
 const emailQueue = new Queue("email-queue", { connection });
 
-const MAX_EMAILS_PER_HOUR = parseInt(
-  process.env.MAX_EMAILS_PER_HOUR || "200",
+const DEFAULT_MAX_LIMIT = parseInt(
+  process.env.MAX_EMAILS_PER_HOUR || "500",
   10,
 );
-const MIN_DELAY_MS = parseInt(
-  process.env.MIN_DELAY_BETWEEN_EMAILS_MS || "2000",
+const DEFAULT_MIN_DELAY_MS = parseInt(
+  process.env.MIN_DELAY_BETWEEN_EMAILS_MS || "500",
   10,
 );
 
+// Global cached transporter to prevent repeated auth handshakes
+let cachedTransporter: any = null;
+
 const getTransporter = async () => {
+  if (cachedTransporter) return cachedTransporter;
+
   const etherealUser = process.env.ETHEREAL_USER?.replace(/["']/g, "").trim();
   const etherealPass = process.env.ETHEREAL_PASS?.replace(/["'\s]/g, "").trim();
 
+  // 1. Try env credentials if provided
   if (etherealUser && etherealPass) {
-    return nodemailer.createTransport({
-      host: "smtp.ethereal.email",
-      port: 587,
-      secure: false,
-      auth: { user: etherealUser, pass: etherealPass },
-    });
+    try {
+      const transporter = nodemailer.createTransport({
+        host: "smtp.ethereal.email",
+        port: 587,
+        secure: false,
+        auth: { user: etherealUser, pass: etherealPass },
+      });
+      await transporter.verify();
+      console.log(
+        `✅ [SMTP Connected] Using Ethereal account: ${etherealUser}`,
+      );
+      cachedTransporter = transporter;
+      return transporter;
+    } catch (authError) {
+      console.warn(
+        "⚠️ .env Ethereal credentials failed (535 Auth). Auto-generating fresh test account...",
+      );
+    }
   }
 
+  // 2. Guaranteed fallback: Generate a valid fresh test account on the fly
   const testAccount = await nodemailer.createTestAccount();
-  return nodemailer.createTransport({
+  console.log(`✨ [Ethereal Account Auto-Created] User: ${testAccount.user}`);
+  cachedTransporter = nodemailer.createTransport({
     host: "smtp.ethereal.email",
     port: 587,
     secure: false,
     auth: { user: testAccount.user, pass: testAccount.pass },
   });
+  return cachedTransporter;
 };
 
 const notifySlack = async (senderId: string, limit: number) => {
@@ -59,9 +79,9 @@ const notifySlack = async (senderId: string, limit: number) => {
     if (!userSettings?.slackWebhook) return;
 
     await axios.post(userSettings.slackWebhook, {
-      text: `🚨 *Rate Limit Alert* \nSender \`${senderId}\` hit the max limit of *${limit} emails/hour*. \nRemaining jobs are rescheduled to the next hour.`,
+      text: `🚨 *Rate Limit Alert* \nSender \`${senderId}\` hit their personal hourly limit of *${limit} emails/hr*. \nTheir remaining emails are safely rescheduled to the next hour.`,
     });
-    console.log(`📢 [Slack Alert Sent] Dispatched to webhook for ${senderId}`);
+    console.log(`📢 [Slack Alert] Dispatched alert for sender: ${senderId}`);
   } catch (error) {
     console.error("Failed to send Slack alert:", error);
   }
@@ -70,72 +90,80 @@ const notifySlack = async (senderId: string, limit: number) => {
 const emailWorker = new Worker(
   "email-queue",
   async (job: Job) => {
-    const { jobId, recipient, subject, body, senderId } = job.data;
+    const { jobId, recipient, subject, body, senderId, hourlyLimit, delaySec } =
+      job.data;
 
-    // Minimum delay between individual sends (provider throttling)
-    await new Promise((resolve) => setTimeout(resolve, MIN_DELAY_MS));
+    const cleanSenderId = (senderId || "mailer@reachinbox.ai")
+      .trim()
+      .toLowerCase();
+    const effectiveLimit =
+      Number(hourlyLimit) > 0 ? Number(hourlyLimit) : DEFAULT_MAX_LIMIT;
+    const individualDelay =
+      Number(delaySec) > 0 ? Number(delaySec) * 1000 : DEFAULT_MIN_DELAY_MS;
 
+    // Wait spacing between emails
+    await new Promise((resolve) => setTimeout(resolve, individualDelay));
+
+    // Per-Sender Hourly Isolation
     const currentHour = new Date().setMinutes(0, 0, 0);
-    const rateLimitKey = `rate_limit:${senderId}:${currentHour}`;
-    const notifiedKey = `slack_notified:${senderId}:${currentHour}`;
+    const rateLimitKey = `rate_limit:${cleanSenderId}:${currentHour}`;
+    const notifiedKey = `slack_notified:${cleanSenderId}:${currentHour}`;
 
-    const sentCountThisHour = await connection.incr(rateLimitKey);
-    if (sentCountThisHour === 1) {
-      await connection.expire(rateLimitKey, 3600 * 2);
-    }
+    const currentSentCount = parseInt(
+      (await connection.get(rateLimitKey)) || "0",
+      10,
+    );
 
-    // 🔴 ACCURATE RATE LIMIT RESCHEDULING (Zero-crash safe re-queue)
-    if (sentCountThisHour > MAX_EMAILS_PER_HOUR) {
+    // Rate Limit Check
+    if (currentSentCount >= effectiveLimit) {
       console.log(
-        `⚠️ [Rate Limit] Sender ${senderId} exceeded hourly limit of ${MAX_EMAILS_PER_HOUR}/hr.`,
+        `⚠️ [Rate Limit] Sender "${cleanSenderId}" hit limit (${effectiveLimit}/hr). Rescheduling job...`,
       );
 
-      const preciseNextTime = Date.now() + 60 * 60 * 1000;
-      const delayTime = preciseNextTime - Date.now();
+      const nextHourTimestamp = Date.now() + 60 * 60 * 1000;
+      const delayMs = nextHourTimestamp - Date.now();
 
-      // 1. Update DB timestamp so UI table shows accurate future time
-      await prisma.emailJob.update({
-        where: { id: jobId },
-        data: { scheduledAt: new Date(preciseNextTime) },
-      });
+      try {
+        await prisma.emailJob.update({
+          where: { id: jobId },
+          data: { scheduledAt: new Date(nextHourTimestamp) },
+        });
+      } catch (dbErr) {
+        console.warn(`⚠️ Skipped DB timestamp update for jobId: ${jobId}`);
+      }
 
-      // 2. Dispatch Slack alert once per hourly window
       const alreadyNotified = await connection.setnx(notifiedKey, "1");
       if (alreadyNotified === 1) {
         await connection.expire(notifiedKey, 3600 * 2);
-        await notifySlack(senderId, MAX_EMAILS_PER_HOUR);
+        await notifySlack(cleanSenderId, effectiveLimit);
       }
 
-      // 3. Re-queue into delayed state cleanly without throwing fatal errors
       await emailQueue.add("send-email", job.data, {
-        delay: delayTime > 0 ? delayTime : 3600000,
+        delay: delayMs > 0 ? delayMs : 3600000,
       });
 
       console.log(
-        `⏳ [Rescheduled Safely] Email to ${recipient} delayed to ${new Date(
-          preciseNextTime,
-        ).toLocaleTimeString()}`,
+        `⏳ Rescheduled ${recipient} to ${new Date(nextHourTimestamp).toLocaleTimeString()}`,
       );
-      return; // Exit processor cleanly
+      return;
     }
 
-    // Send Email via Ethereal SMTP
-    const transporter = await getTransporter();
-    const senderEmail =
-      senderId || process.env.ETHEREAL_USER || "mailer@reachinbox.ai";
+    // Increment count only when processing actual send
+    await connection.incr(rateLimitKey);
+    await connection.expire(rateLimitKey, 3600 * 2);
 
+    // Dispatch Email via Verified Transporter
+    const transporter = await getTransporter();
     const mailOptions = {
-      from: `"Reachinbox" <${senderEmail}>`,
+      from: `"ReachInbox Engine" <${cleanSenderId}>`,
       to: recipient,
       subject: subject || "Notification",
       html: `
         <div style="font-family: Arial, sans-serif; padding: 24px; color: #1e293b;">
           <h2 style="color: #00A859; margin-bottom: 16px;">${subject}</h2>
-          <div style="font-size: 14px; line-height: 1.6;">${(
-            body || ""
-          ).replace(/\n/g, "<br/>")}</div>
+          <div style="font-size: 14px; line-height: 1.6;">${(body || "").replace(/\n/g, "<br/>")}</div>
           <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-          <small style="color: #94a3b8;">Delivered via ReachInbox Production Queue Engine</small>
+          <small style="color: #94a3b8;">Delivered via ReachInbox Multi-Tenant Queue Engine</small>
         </div>
       `,
     };
@@ -144,22 +172,30 @@ const emailWorker = new Worker(
     const previewUrl = nodemailer.getTestMessageUrl(info);
 
     console.log(
-      `✅ [Delivered] To: ${recipient}, Message ID: ${info.messageId}`,
+      `✅ [Delivered] [Sender: ${cleanSenderId}] -> To: ${recipient}`,
     );
-
-    // 🔗 Instant Clickable URL printed directly to terminal
     if (previewUrl) {
-      console.log(`🔗 [CLICK TO VIEW EMAIL]: ${previewUrl}`);
+      console.log(`🔗 [VIEW EMAIL LINK]: ${previewUrl}`);
     }
 
-    // 1. Update Database Status to SENT
-    await prisma.emailJob.update({
-      where: { id: jobId },
-      data: { status: "SENT" },
-    });
+    // Update Database Status to SENT
+    try {
+      await prisma.emailJob.update({
+        where: { id: jobId },
+        data: { status: "SENT" },
+      });
+    } catch (dbErr) {
+      console.warn(`⚠️ Could not update SENT status in DB for jobId: ${jobId}`);
+    }
 
-    // 2. Sync Document Status in Elasticsearch Index
-    await updateEmailStatusInES(jobId, "SENT");
+    // Sync status in Elasticsearch / OpenSearch
+    try {
+      await updateEmailStatusInES(jobId, "SENT");
+    } catch (esErr) {
+      console.warn(
+        `⚠️ Elasticsearch status update skipped for jobId: ${jobId}`,
+      );
+    }
   },
   {
     connection,
@@ -171,4 +207,4 @@ emailWorker.on("failed", (job, err) => {
   console.error(`❌ [Job Failed] ID: ${job?.id}, Reason: ${err.message}`);
 });
 
-console.log(`Email Worker active and monitoring rate limits...`);
+console.log("🚀 Multi-Tenant Email Worker active and ready!");
