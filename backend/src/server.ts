@@ -6,10 +6,12 @@ import { PrismaClient } from "@prisma/client";
 import dotenv from "dotenv";
 import path from "path";
 
+// Bull-board imports for live queue monitoring
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { ExpressAdapter } from "@bull-board/express";
 
+// Elasticsearch / OpenSearch helpers
 import {
   initElasticsearch,
   indexEmail,
@@ -31,7 +33,9 @@ const redisConnection = new IORedis(process.env.REDIS_URL as string, {
 
 const emailQueue = new Queue("email-queue", { connection: redisConnection });
 
-// Admin Dashboard Setup
+// ==========================================
+// Live BullMQ Admin Dashboard Setup
+// ==========================================
 const serverAdapter = new ExpressAdapter();
 serverAdapter.setBasePath("/admin/queues");
 
@@ -42,7 +46,9 @@ createBullBoard({
 
 app.use("/admin/queues", serverAdapter.getRouter());
 
-// Slack Settings API
+// ==========================================
+// API: Save or Update Slack Webhook Setting
+// ==========================================
 app.post("/api/settings/slack", async (req, res) => {
   const { senderId, slackWebhook } = req.body;
 
@@ -59,7 +65,8 @@ app.post("/api/settings/slack", async (req, res) => {
 
     res.json({
       success: true,
-      message: "Slack workspace connected successfully!",
+      message:
+        "Slack workspace connected successfully! Rate limit alerts will now be sent to your Slack channel.",
       settings,
     });
   } catch (error) {
@@ -68,7 +75,9 @@ app.post("/api/settings/slack", async (req, res) => {
   }
 });
 
-// Schedule API
+// ==========================================
+// API: Schedule New Emails
+// ==========================================
 app.post("/api/schedule", async (req, res) => {
   const {
     emails,
@@ -95,12 +104,10 @@ app.post("/api/schedule", async (req, res) => {
     let count = 0;
     for (let i = 0; i < emails.length; i++) {
       const email = emails[i];
-
-      // Stagger jobs if multiple emails scheduled together
       const individualDelay = finalDelay + i * perEmailDelayMs;
       const effectiveScheduledAt = new Date(Date.now() + individualDelay);
 
-      // 1. Persist in Database
+      // 1. Persist record in database
       const jobRecord = await prisma.emailJob.create({
         data: {
           recipient: email,
@@ -112,14 +119,14 @@ app.post("/api/schedule", async (req, res) => {
         },
       });
 
-      // 2. Sync to Elasticsearch
+      // 2. Index record in Elasticsearch / OpenSearch
       try {
         await indexEmail(jobRecord);
       } catch (e) {
         console.warn("ES indexing skipped:", e);
       }
 
-      // 3. Add to BullMQ with custom limits passed
+      // 3. Queue task in BullMQ
       await emailQueue.add(
         "send-email",
         {
@@ -147,7 +154,9 @@ app.post("/api/schedule", async (req, res) => {
   }
 });
 
-// Scheduled Jobs Fetch
+// ==========================================
+// API: Fetch Scheduled Jobs (Tenant-Isolated)
+// ==========================================
 app.get("/api/jobs/scheduled", async (req, res) => {
   const { senderId } = req.query;
 
@@ -166,7 +175,9 @@ app.get("/api/jobs/scheduled", async (req, res) => {
   }
 });
 
-// Sent Jobs Fetch
+// ==========================================
+// API: Fetch Sent Jobs (Tenant-Isolated)
+// ==========================================
 app.get("/api/jobs/sent", async (req, res) => {
   const { senderId } = req.query;
 
@@ -185,7 +196,26 @@ app.get("/api/jobs/sent", async (req, res) => {
   }
 });
 
-// Search API
+// ==========================================
+// API: Delete an Email Job
+// ==========================================
+app.delete("/api/jobs/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    await prisma.emailJob.delete({
+      where: { id: isNaN(Number(id)) ? id : (Number(id) as any) },
+    });
+    res.json({ success: true, message: "Email removed successfully" });
+  } catch (error) {
+    console.error("Delete Error:", error);
+    res.status(500).json({ error: "Failed to delete email record" });
+  }
+});
+
+// ==========================================
+// API: Search Emails via Elasticsearch (With DB Fallback)
+// ==========================================
 app.get("/api/emails/search", async (req, res) => {
   const { q, senderId } = req.query;
 
